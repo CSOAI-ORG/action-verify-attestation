@@ -1,14 +1,52 @@
 // Verify AI Attestation — zero-dep Ed25519 checker (style-A board / style-B signal-card).
-// Canonical per estate spec; verify_signed.py equivalent in Node (WebCrypto).
-const { createPublicKey, verify } = require("node:crypto");
+// Estate canon: style-A = sha256(json.dumps(body, sort_keys=True (default separators)))
+// -> Ed25519; style-B = sha256(json.dumps(body, sort_keys, compact, ensure_ascii=False))
+// -> Ed25519. JS stringify = compact separators, keys MUST be sorted manually.
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 
-function canon(obj, compact) {
-  return JSON.stringify(obj, compact
-    ? Object.create(null)
-    : null);
+const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+function sortedCopy(obj) {
+  const out = {};
+  for (const k of Object.keys(obj).sort()) out[k] = obj[k];
+  return out;
 }
-function styled(compact) { return (o) => { if (compact) { const r={}; for (const k of Object.keys(o).sort()) r[k]=o[k]; return r; } return o; }; }
+
+function pyStyle(value, compact) {
+  const esc = (t) => compact ? t : t.replace(/[\u0080-\uFFFF]/g,
+    (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  // python json.dumps(sort_keys=True) formatting: compact = separators (",", ":");
+  // style-A default = separators (", ", ": ") — recursive, string-safe.
+  if (value === null || typeof value !== "object") {
+    return esc(JSON.stringify(value));
+  }
+  if (Array.isArray(value)) {
+    const items = value.map((v) => pyStyle(v, compact));
+    return "[" + items.join(compact ? "," : ", ") + "]";
+  }
+  const ks = Object.keys(value).sort();
+  const parts = ks.map((k) => esc(JSON.stringify(k))
+      + (compact ? ":" : ": ") + pyStyle(value[k], compact));
+  return "{" + parts.join(compact ? "," : ", ") + "}";
+}
+
+function canon(obj, compact) {
+  return pyStyle(obj, compact);
+}
+
+function sha256(s) {
+  return crypto.createHash("sha256").update(s).digest();
+}
+
+function ed25519_verify(pubHex, sigBuf, msg) {
+  const key = crypto.createPublicKey({
+    key: Buffer.concat([SPKI_PREFIX, Buffer.from(pubHex, "hex")]),
+    format: "der",
+    type: "spki",
+  });
+  return crypto.verify(null, msg, key, sigBuf);
+}
 
 async function main() {
   const p = process.env["INPUT_ARTIFACT"];
@@ -16,25 +54,25 @@ async function main() {
   const d = JSON.parse(fs.readFileSync(p, "utf8"));
   let ok = false;
   if (typeof d.signature === "string") {
-    // style-A: sha256(canonical minus sig fields, default separators) -> Ed25519
-    const body = {}; for (const k of Object.keys(d)) if (!["signature","signer","signed","sig_input"].includes(k)) body[k]=d[k];
-    const digest = crypto_bundle.sha256(JSON.stringify(body));
-    ok = await ed25519(d.signer, d.signature, digest);
+    const body = {};
+    for (const k of Object.keys(d)) {
+      if (!["signature", "signer", "signed", "sig_input"].includes(k)) body[k] = d[k];
+    }
+    const c = canon(body, false);
+    ok = ed25519_verify(d.signer, Buffer.from(d.signature, "hex"), sha256(c));
   } else if (d.signature && d.signature.pubkey) {
-    const body = {}; for (const k of Object.keys(d)) if (!["content_id","signature"].includes(k)) body[k]=d[k];
-    const canonB = JSON.stringify(JSON.parse(JSON.stringify(body, null, 0)), Object.keys(body).sort());
-    ok = await ed25519(d.signature.pubkey, d.signature.sig, crypto_bundle.sha256(canonB));
+    const body = {};
+    for (const k of Object.keys(d)) {
+      if (!["content_id", "signature"].includes(k)) body[k] = d[k];
+    }
+    const c = canon(body, true);
+    // style-B signs the ASCII hex string of content_id (sk.sign(cid.encode()))
+    const cid = sha256(c).toString("hex");
+    ok = ed25519_verify(Buffer.from(d.signature.pubkey, "base64").toString("hex"),
+                        Buffer.from(d.signature.sig, "base64"), Buffer.from(cid, "utf8"));
   }
   console.log(ok ? "ATTESTATION VALID" : "ATTESTATION INVALID");
   process.exit(ok ? 0 : 1);
 }
-const crypto_bundle = { sha256: (s) => require("node:crypto").createHash("sha256").update(s).digest() };
-async function ed25519(pubHex, sigB64orHex, message) {
-  const crypto = require("node:crypto");
-  const raw = Buffer.from(pubHex, "hex");
-  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100","hex"), raw]);
-  const key = createPublicKey({ key: spki, format: "der", type: "spki" });
-  const sig = Buffer.from(sigB64orHex.length===64? sigB64orHex : sigB64orHex, sigB64orHex.length===64?"hex":"base64");
-  return verify("ed25519", key, sig, message);
-}
-main();
+
+main().catch((e) => { console.error(e.message); process.exit(2); });
