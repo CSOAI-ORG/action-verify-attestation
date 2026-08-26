@@ -1,0 +1,12 @@
+name: 'Verify AI Attestation'
+description: 'Verify Council of AI signed attestations (Ed25519) in CI — zero-trust, zero-dep.'
+inputs:
+  artifact:
+    description: 'Path to the signed JSON artifact'
+    required: true
+runs:
+  using: 'node20'
+  main: 'index.js'
+branding:
+  icon: 'shield-check'
+  color: 'green'
