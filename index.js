@@ -32,7 +32,21 @@ function pyStyle(value, compact) {
 }
 
 function canon(obj, compact) {
+  // Roadmap #1 (RFC 8785): canon:"jcs-rfc8785" cards — canonical bytes = pinned to
+  // Python rfc8785.dumps semantics: ES6 numbers (shortest round-trip, 0 for -0), sorted
+  // keys, no whitespace, \u-escaped non-ASCII. JS String(n) ≈ ES6 for the corpus.
+  if (obj && obj.canon === "jcs-rfc8785") return jcs(obj);
   return pyStyle(obj, compact);
+}
+
+function jcs(v) {
+  if (v === null) return "null";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return v === 0 ? "0" : String(v);
+  if (typeof v === "string") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(jcs).join(",") + "]";
+  const ks = Object.keys(v).sort();
+  return "{" + ks.map((k) => JSON.stringify(k) + ":" + jcs(v[k])).join(",") + "}";
 }
 
 function sha256(s) {
